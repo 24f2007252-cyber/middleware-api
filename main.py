@@ -8,7 +8,7 @@ EMAIL = "24f2007252@ds.study.iitm.ac.in"
 
 ALLOWED_ORIGINS = [
     "https://app-3hxo59.example.com",
-    # Allow the exam page as well
+    # Exam page origin (keep this)
     "https://exam.sanand.workers.dev",
 ]
 
@@ -28,13 +28,13 @@ app.add_middleware(
 )
 
 # client_id -> timestamps
-rate_limit = {}
+rate_limit_store = {}
 
+# ---------------- Request Context ----------------
 
 @app.middleware("http")
-async def request_context_and_rate_limit(request: Request, call_next):
+async def request_context(request: Request, call_next):
 
-    # ---------- Request ID ----------
     request_id = request.headers.get("X-Request-ID")
 
     if not request_id:
@@ -42,17 +42,37 @@ async def request_context_and_rate_limit(request: Request, call_next):
 
     request.state.request_id = request_id
 
-    # ---------- Rate Limit ----------
+    response = await call_next(request)
+
+    # ALWAYS echo the request ID
+    response.headers["X-Request-ID"] = request_id
+
+    return response
+
+
+# ---------------- Rate Limiter ----------------
+
+@app.middleware("http")
+async def rate_limiter(request: Request, call_next):
+
     client = request.headers.get("X-Client-Id")
 
     if client:
+
         now = time.time()
 
-        timestamps = rate_limit.get(client, [])
+        timestamps = rate_limit_store.get(client, [])
 
         timestamps = [t for t in timestamps if now - t < WINDOW]
 
         if len(timestamps) >= RATE_LIMIT:
+
+            request_id = getattr(
+                request.state,
+                "request_id",
+                request.headers.get("X-Request-ID", str(uuid.uuid4()))
+            )
+
             return JSONResponse(
                 status_code=429,
                 headers={
@@ -61,29 +81,28 @@ async def request_context_and_rate_limit(request: Request, call_next):
                 },
                 content={
                     "detail": "Too Many Requests"
-                },
+                }
             )
 
         timestamps.append(now)
 
-        rate_limit[client] = timestamps
+        rate_limit_store[client] = timestamps
 
-    response = await call_next(request)
+    return await call_next(request)
 
-    response.headers["X-Request-ID"] = request_id
 
-    return response
-
+# ---------------- Home ----------------
 
 @app.get("/")
 def home():
-    return {
-        "status": "running"
-    }
+    return {"status": "running"}
 
+
+# ---------------- Ping ----------------
 
 @app.get("/ping")
-def ping(request: Request):
+async def ping(request: Request):
+
     return {
         "email": EMAIL,
         "request_id": request.state.request_id,
